@@ -6,6 +6,7 @@ The page only displays what service.run() returns; it never re-filters or re-ran
 from __future__ import annotations
 
 import os
+import re
 from datetime import date
 
 import streamlit as st
@@ -35,12 +36,6 @@ COUNT_TITLES = {
     "duration": "Не работают столько часов",
     "price_missing": "Без указанной цены",
 }
-FACT_TITLES = {
-    "compare": "Отличие от других карточек", "profile": "Из описания профиля",
-    "format": "Формат", "available": "Календарь", "budget": "Бюджет", "category": "Категория",
-    "language": "Язык", "duration": "Длительность", "synthetic": "Синтетика",
-    "city_imputed": "Город",
-}
 
 
 @st.cache_data
@@ -51,6 +46,11 @@ def catalog_options() -> tuple[list[str], list[str]]:
     return cities, categories
 
 
+def keep_numbers_together(text: str) -> str:
+    """«1 000 000 ₸» must not wrap across lines: use non-breaking spaces inside amounts."""
+    return re.sub(r"(?<=\d) (?=\d{3}(?!\d))|(?<=\d) (?=₸)", " ", text)
+
+
 def simulated_llm_failure(_candidate):
     raise TimeoutError("simulated LLM outage")
 
@@ -59,7 +59,10 @@ def sidebar_request() -> tuple[dict | None, bool, bool]:
     cities, categories = catalog_options()
     st.sidebar.header("Параметры заказа")
     names = ["— свой запрос —", *SCENARIOS]
-    preset_name = st.sidebar.selectbox("Готовый демо-сценарий", names)
+    # ?scenario=2 opens a demo scenario directly (handy for the demo and README screenshots).
+    from_link = st.query_params.get("scenario", "0")
+    start = int(from_link) if from_link.isdigit() and int(from_link) < len(names) else 0
+    preset_name = st.sidebar.selectbox("Готовый демо-сценарий", names, index=start)
     preset = SCENARIOS.get(preset_name, {}).get("request", {})
     key = f"form-{names.index(preset_name)}"  # new key -> widgets reset to the preset values
 
@@ -82,8 +85,9 @@ def sidebar_request() -> tuple[dict | None, bool, bool]:
     st.sidebar.divider()
     fail_llm = st.sidebar.toggle("Имитировать сбой ИИ", help="Проверка устойчивости: даже если модель "
                                  "недоступна, объяснения остаются — они собираются по шаблону из проверенных фактов.")
-    debug = st.sidebar.toggle("Подробности подбора", help="Показать баллы каждой карточки, проверенные факты "
-                              "и сколько подрядчиков отсеяно по каждой причине.")
+    debug = st.sidebar.toggle("Подробности подбора", value=st.query_params.get("debug") == "1",
+                              help="Показать баллы каждой карточки, проверенные факты "
+                                   "и сколько подрядчиков отсеяно по каждой причине.")
     st.sidebar.caption("ИИ подключён: модель выбирает, какие факты подчеркнуть." if os.getenv("OPENAI_API_KEY") else
                        "ИИ не подключён (нет OPENAI_API_KEY): объяснения собираются по шаблону "
                        "из проверенных фактов.")
@@ -116,7 +120,7 @@ def render_card(card: dict, debug: bool) -> None:
         if badges:
             st.markdown(" ".join(badges))
 
-        st.write(card["reason"])
+        st.write(keep_numbers_together(card["reason"]))
         st.caption("Факты для объяснения отобрал ИИ" if card["reason_source"] == "llm"
                    else "Объяснение собрано по шаблону из проверенных фактов")
 
@@ -127,9 +131,9 @@ def render_card(card: dict, debug: bool) -> None:
                 st.markdown("\n".join(lines))
             with st.expander("Подтверждённые факты"):
                 used = set(card["evidence_ids"])
-                for fact in card["facts"]:
-                    mark = "✅" if fact["id"] in used else "▫️"
-                    st.markdown(f"{mark} **{FACT_TITLES.get(fact['id'], fact['id'])}:** {fact['text']}")
+                st.caption("✅ — факт использован в объяснении")
+                st.markdown("\n".join(f"- {'✅ ' if fact['id'] in used else ''}{fact['text']}"
+                                      for fact in card["facts"]))
 
 
 def main() -> None:
@@ -155,7 +159,7 @@ def main() -> None:
 
     results, hints = response["results"], response["hints"]
     if hints:
-        advice = "\n".join(f"- {hint}" for hint in hints)
+        advice = "\n".join(f"- {keep_numbers_together(hint)}" for hint in hints)
         if len(results) == 3:
             # Full answer: the advice is secondary, keep it folded.
             with st.expander("Почему не подошли остальные и как расширить выбор"):
