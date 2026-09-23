@@ -21,6 +21,20 @@ OUTCOME = {
     "category_not_found": ("В этом городе такой категории нет", "error"),
     "no_match": ("Кандидаты есть, но ни один не проходит по условиям", "warning"),
 }
+SCORE_TITLES = {
+    "specialization": "Формат — основное направление (стоит в профиле первым)",
+    "description": "Описание говорит об этом виде событий",
+    "language": "Совпал выбранный язык",
+    "duration": "Длительность подтверждена данными",
+}
+COUNT_TITLES = {
+    "category_candidates": "Всего в категории в этом городе",
+    "busy": "Заняты на дату",
+    "over_budget": "Дороже бюджета",
+    "format": "Не берут этот тип мероприятия",
+    "duration": "Не работают столько часов",
+    "price_missing": "Без указанной цены",
+}
 FACT_TITLES = {
     "compare": "Отличие от других карточек", "profile": "Из описания профиля",
     "format": "Формат", "available": "Календарь", "budget": "Бюджет", "category": "Категория",
@@ -66,11 +80,13 @@ def sidebar_request() -> tuple[dict | None, bool, bool]:
         submitted = st.form_submit_button("Подобрать", type="primary", use_container_width=True)
 
     st.sidebar.divider()
-    fail_llm = st.sidebar.toggle("Имитировать сбой LLM", help="Проверка: объяснения не пропадают, "
-                                 "карточки получают reason_source = fallback.")
-    debug = st.sidebar.toggle("Показать кухню (для жюри)", help="Баллы, факты, счётчики отказов.")
-    st.sidebar.caption("LLM: " + ("OPENAI_API_KEY задан" if os.getenv("OPENAI_API_KEY") else
-                                  "ключ не задан — работает детерминированный fallback"))
+    fail_llm = st.sidebar.toggle("Имитировать сбой ИИ", help="Проверка устойчивости: даже если модель "
+                                 "недоступна, объяснения остаются — они собираются по шаблону из проверенных фактов.")
+    debug = st.sidebar.toggle("Подробности подбора", help="Показать баллы каждой карточки, проверенные факты "
+                              "и сколько подрядчиков отсеяно по каждой причине.")
+    st.sidebar.caption("ИИ подключён: модель выбирает, какие факты подчеркнуть." if os.getenv("OPENAI_API_KEY") else
+                       "ИИ не подключён (нет OPENAI_API_KEY): объяснения собираются по шаблону "
+                       "из проверенных фактов.")
 
     if not (submitted or preset_name in SCENARIOS):
         return None, fail_llm, debug
@@ -101,12 +117,14 @@ def render_card(card: dict, debug: bool) -> None:
             st.markdown(" ".join(badges))
 
         st.write(card["reason"])
-        source = "LLM выбрал факты" if card["reason_source"] == "llm" else "fallback-шаблон"
-        st.caption(f"Объяснение: {source}")
+        st.caption("Факты для объяснения отобрал ИИ" if card["reason_source"] == "llm"
+                   else "Объяснение собрано по шаблону из проверенных фактов")
 
         if debug:
             with st.expander(f"Баллы: {card['score']}"):
-                st.json({"base": 70, **card["score_parts"]})
+                lines = ["- База за прохождение всех условий: **70**"]
+                lines += [f"- {SCORE_TITLES.get(k, k)}: **+{v}**" for k, v in card["score_parts"].items()]
+                st.markdown("\n".join(lines))
             with st.expander("Подтверждённые факты"):
                 used = set(card["evidence_ids"])
                 for fact in card["facts"]:
@@ -129,13 +147,24 @@ def main() -> None:
         with st.spinner("Подбираем…"):
             response = run(request, simulated_llm_failure if fail_llm else None)
     except ValueError as exc:
-        st.error(f"Запрос некорректен: {exc}")
+        st.error(f"Проверьте параметры: {exc}")
         return
 
     title, kind = OUTCOME[response["status"]]
-    getattr(st, kind)(f"**{title}.** {response['message']}")
+    getattr(st, kind)(f"**{title}.** {response['headline']}")
 
-    results = response["results"]
+    results, hints = response["results"], response["hints"]
+    if hints:
+        advice = "\n".join(f"- {hint}" for hint in hints)
+        if len(results) == 3:
+            # Full answer: the advice is secondary, keep it folded.
+            with st.expander("Почему не подошли остальные и как расширить выбор"):
+                st.markdown(advice)
+        else:
+            st.markdown("**Почему вариантов мало и что можно изменить**" if results
+                        else "**Почему никто не подошёл и что можно изменить**")
+            st.markdown(advice)
+
     if results:
         for column, card in zip(st.columns(3), results):
             with column:
@@ -148,8 +177,10 @@ def main() -> None:
             st.markdown("**Запрос**")
             st.json(request)
         with right:
-            st.markdown("**Счётчики отказов** (один профиль может попасть в несколько)")
-            st.json(response["counts"])
+            st.markdown("**Сколько отсеяно по каждой причине**")
+            st.markdown("\n".join(f"- {COUNT_TITLES.get(k, k)}: **{v}**" for k, v in response["counts"].items()))
+            st.caption("Один подрядчик может не пройти сразу по нескольким причинам, "
+                       "поэтому сумма может быть больше общего числа.")
         st.caption(f"Время ответа: {response['elapsed_ms']} мс")
 
 

@@ -12,13 +12,11 @@ from typing import Any, Iterable
 DATA_PATH = Path(__file__).resolve().parent / "data" / "providers.csv"
 LIST_FIELDS = ("categories", "event_formats", "languages", "busy_dates")
 MIN_DATE, MAX_DATE = date(2026, 9, 23), date(2026, 12, 31)
-REJECT_LABELS = (
-    ("busy", "заняты на дату"),
-    ("over_budget", "имеют цену от выше бюджета"),
-    ("format", "не берут этот формат"),
-    ("duration", "не подходят по длительности"),
-    ("price_missing", "не имеют указанной цены"),
-)
+REJECT_CAUSES = ("busy", "over_budget", "format", "duration", "price_missing")
+FORMAT_PLURAL = {
+    "свадьба": "свадьбы", "той": "тои", "корпоратив": "корпоративы",
+    "конференция": "конференции", "юбилей": "юбилеи", "день рождения": "дни рождения",
+}
 # Word stems, because descriptions say «свадеб», «корпоративных», not the exact format name.
 FORMAT_STEMS = {
     "свадьба": ("свадеб", "свадьб", "молодожён", "молодожен", "невест", "бракосочет"),
@@ -126,12 +124,6 @@ def _plural(n: int, one: str, few: str, many: str) -> str:
     return few if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14) else many
 
 
-def _causes(counts: Counter[str], event_date: date) -> str:
-    """«заняты на 19 декабря — 9, имеют цену от выше бюджета — 2». Counters can overlap."""
-    labels = dict(REJECT_LABELS, busy=f"заняты на {_display_day(event_date)}")
-    return ", ".join(f"{labels[key]} — {counts[key]}" for key, _ in REJECT_LABELS if counts[key])
-
-
 def _next_free(provider: dict[str, Any], event_date: date) -> date | None:
     busy = set(_list_field(provider.get("busy_dates")))
     day = event_date
@@ -142,17 +134,92 @@ def _next_free(provider: dict[str, Any], event_date: date) -> date | None:
     return None
 
 
-def _empty_message(counts: Counter[str], total: int, where: str, event_date: date,
-                   busy_only: list[dict[str, Any]]) -> str:
-    noun = _plural(total, "подрядчик", "подрядчика", "подрядчиков")
-    message = f"{where}: есть {total} {noun}, но ни один не прошёл условия: {_causes(counts, event_date)}."
-    # Candidates that failed ONLY because of the date: suggest the nearest free day.
-    options = sorted((day, str(p.get("id")), str(p.get("anon_name")))
-                     for p in busy_only if (day := _next_free(p, event_date)))
-    if options:
-        day, _, name = options[0]
-        message += f" Ближайший вариант по остальным условиям: {name} свободен {_display_date(day)}."
-    return message
+def _count(n: int) -> str:
+    return f"{n} {_plural(n, 'подрядчик', 'подрядчика', 'подрядчиков')}"
+
+
+def _name(provider: dict[str, Any]) -> str:
+    return str(provider.get("anon_name") or provider.get("name") or provider.get("id"))
+
+
+def _added(group: list[dict[str, Any]]) -> str:
+    return f"добавится {_name(group[0])}" if len(group) == 1 else f"добавятся {len(group)}"
+
+
+def _hints(blocked: list[tuple[dict[str, Any], set[str]]], event_date: date, event_format: str,
+           budget: int, duration: int | None) -> list[str]:
+    """Plain-language advice: what to change to get more options.
+
+    Only providers blocked by exactly ONE condition are counted per condition, so each
+    hint is honest: changing that condition alone really adds those providers.
+    Wording avoids gendered forms: names do not tell a provider's gender.
+    """
+    single = {cause: [p for p, causes in blocked if causes == {cause}] for cause in REJECT_CAUSES}
+    several = [causes for _, causes in blocked if len(causes) > 1]
+    day = _display_day(event_date)
+    hints = []
+
+    if group := single["busy"]:
+        free: dict[date, list[str]] = {}
+        for p in sorted(group, key=lambda p: str(p.get("id"))):
+            if next_day := _next_free(p, event_date):
+                free.setdefault(next_day, []).append(_name(p))
+        if len(group) == 1:
+            text = f"{_name(group[0])} подходит по всем условиям, кроме даты: {day} уже занято."
+            if free:
+                text += f" Ближайший свободный день — {_display_day(min(free))}."
+        else:
+            text = f"{_count(len(group))} подходят по всем условиям, кроме даты: {day} у них занято."
+            if free:
+                days = sorted(free)[:3]
+                text += " Ближайшие свободные дни: " + ", ".join(
+                    f"{_display_day(d)} ({', '.join(free[d])})" for d in days) + "."
+        hints.append(text)
+
+    if group := sorted(single["over_budget"], key=lambda p: (_as_int(p.get("price_from_kzt")), str(p.get("id")))):
+        cheapest = _as_int(group[0].get("price_from_kzt"))
+        top = _as_int(group[-1].get("price_from_kzt"))
+        if len(group) == 1:
+            text = (f"{_name(group[0])} подходит по всем условиям, кроме бюджета: цена от {_money(cheapest)}. "
+                    f"Увеличьте бюджет на {_money(cheapest - budget)}, чтобы добавить этот вариант.")
+        else:
+            first = [p for p in group if _as_int(p.get("price_from_kzt")) == cheapest]
+            text = (f"{_count(len(group))} подходят по всем условиям, кроме бюджета. "
+                    f"Увеличьте бюджет на {_money(cheapest - budget)} (до {_money(cheapest)}) — {_added(first)}.")
+            if top > cheapest:
+                everyone = "оба" if len(group) == 2 else f"все {len(group)}"
+                text += f" При бюджете {_money(top)} подойдут {everyone}."
+        hints.append(text)
+
+    if group := single["format"]:
+        wanted = FORMAT_PLURAL.get(event_format, f"формат «{event_format}»")
+        their = Counter(_key(f) for p in group for f in _list_field(p.get("event_formats")))
+        common = ", ".join(FORMAT_PLURAL.get(f, f) for f, _ in sorted(their.items(), key=lambda x: (-x[1], x[0]))[:3])
+        who = _name(group[0]) if len(group) == 1 else _count(len(group))
+        verb = "не берёт" if len(group) == 1 else "не берут"
+        hints.append(f"{who} {verb} {wanted} — только {common}.")
+
+    if group := single["duration"]:
+        longest = max(_as_int(p.get("max_hours")) for p in group)
+        if len(group) == 1:
+            hints.append(f"{_name(group[0])} работает на площадке максимум {longest} ч. "
+                         f"Сократите длительность до {longest} ч, чтобы добавить этот вариант.")
+        else:
+            fit = [p for p in group if _as_int(p.get("max_hours")) == longest]
+            hints.append(f"{_count(len(group))} работают на площадке меньше {duration} ч. "
+                         f"Сократите длительность до {longest} ч — {_added(fit)}.")
+
+    if group := single["price_missing"]:
+        hints.append(f"У {len(group)} {_plural(len(group), 'подрядчика', 'подрядчиков', 'подрядчиков')} "
+                     "не указана цена, их нельзя сравнить с бюджетом.")
+
+    if several:
+        names = {"busy": "дата", "over_budget": "бюджет", "format": "тип мероприятия",
+                 "duration": "длительность", "price_missing": "цена"}
+        which = ", ".join(names[c] for c in REJECT_CAUSES if any(c in s for s in several))
+        verb = "не подходит" if len(several) % 10 == 1 and len(several) % 100 != 11 else "не подходят"
+        hints.append(f"Ещё {_count(len(several))} {verb} сразу по нескольким условиям ({which}).")
+    return hints
 
 
 def recommend(request: dict[str, Any], providers: Iterable[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -165,22 +232,22 @@ def recommend(request: dict[str, Any], providers: Iterable[dict[str, Any]] | Non
     duration = None if duration_raw in (None, "") else _as_int(duration_raw)
     language = _key(request.get("language"))
     if not all((city, category, event_format, date_text)) or budget is None or budget < 0:
-        raise ValueError("city, date, event_format, category and nonnegative integer budget_kzt are required")
+        raise ValueError("Заполните город, дату, тип мероприятия, категорию и бюджет (целое число от 0).")
     try:
         event_date = date.fromisoformat(date_text)
     except ValueError as exc:
-        raise ValueError("date must be ISO YYYY-MM-DD") from exc
+        raise ValueError("Дата должна быть в формате ГГГГ-ММ-ДД, например 2026-10-15.") from exc
     if not MIN_DATE <= event_date <= MAX_DATE:
-        raise ValueError("date is outside the catalog calendar (2026-09-23 to 2026-12-31)")
+        raise ValueError("Календарь подрядчиков есть только с 23 сентября по 31 декабря 2026 года — выберите дату в этом окне.")
     if duration_raw not in (None, "") and (duration is None or duration <= 0):
-        raise ValueError("duration_hours must be a positive integer")
+        raise ValueError("Длительность должна быть целым числом часов больше нуля.")
 
     catalog = list(providers) if providers is not None else load_providers()
     candidates = [p for p in catalog if _key(p.get("city")) == city
                   and category in {_key(x) for x in _list_field(p.get("categories"))}]
     counts: Counter[str] = Counter()
     matches = []
-    busy_only: list[dict[str, Any]] = []
+    blocked: list[tuple[dict[str, Any], set[str]]] = []  # (provider, failed conditions)
     for provider in candidates:
         price = _as_int(provider.get("price_from_kzt"))
         max_hours = _as_int(provider.get("max_hours"))
@@ -197,8 +264,7 @@ def recommend(request: dict[str, Any], providers: Iterable[dict[str, Any]] | Non
             if failed:
                 counts[cause] += 1
         if any(rejected.values()):
-            if [cause for cause, failed in rejected.items() if failed] == ["busy"]:
-                busy_only.append(provider)
+            blocked.append((provider, {cause for cause, failed in rejected.items() if failed}))
             continue
 
         name = str(provider.get("anon_name") or provider.get("name") or "")
@@ -209,14 +275,14 @@ def recommend(request: dict[str, Any], providers: Iterable[dict[str, Any]] | Non
         category_label = next(x for x in _list_field(provider.get("categories")) if _key(x) == category)
         facts = [
             _fact("category", f"Категория: {category_label}"),
-            _fact("available", f"По календарю свободен {_display_date(event_date)}"),
-            _fact("format", f"Берёт мероприятия формата «{event_format}»"),
+            _fact("available", f"Дата {_display_date(event_date)} в календаре свободна"),
+            _fact("format", f"Берёт {FORMAT_PLURAL.get(event_format, f'формат «{event_format}»')}"),
             _fact("budget", f"{'Оценочная цена' if price_imputed else 'Цена'} от {_money(price)} укладывается в бюджет {_money(budget)}"),
         ]
         if language and language in languages:
             facts.append(_fact("language", f"Работает на языке «{language}»"))
         if duration is not None and max_hours is not None:
-            facts.append(_fact("duration", f"Работает до {max_hours} ч, запрос на {duration} ч"))
+            facts.append(_fact("duration", f"Работает на площадке до {max_hours} ч — ваши {duration} ч покрывает"))
         if excerpt:
             facts.append(_fact("profile", f"В описании профиля: «{excerpt}»"))
         if synthetic:
@@ -244,25 +310,40 @@ def recommend(request: dict[str, Any], providers: Iterable[dict[str, Any]] | Non
     results = matches[:3]
     summary = {"category_candidates": len(candidates)}
     summary.update({key: counts[key] for key in ("busy", "over_budget", "format", "duration", "price_missing")})
-    where = f"«{str(request.get('category')).strip()}» в городе {str(request.get('city')).strip()}"
+    city_label, category_label = str(request.get("city")).strip(), str(request.get("category")).strip()
+    where = f"категории «{category_label}» в городе {city_label}"
+    day = _display_day(event_date)
+    hints = _hints(blocked, event_date, event_format, budget, duration)
+    total = len(candidates)
+    of_total = f"{total} {_plural(total, 'подрядчика', 'подрядчиков', 'подрядчиков')}"
     if results:
-        count, shown, total = len(matches), len(results), len(candidates)
-        message = f"Подходящих подрядчиков: {count} из {total} в категории {where}. "
-        message += f"Показан {shown}." if shown == 1 else f"Показаны первые {shown}."
-        if total > count:
-            prefix = "Остальные не прошли условия" if count < 3 else "Не прошли условия"
-            message += f" {prefix}: {_causes(counts, event_date)}."
-        elif count < 3:
-            message += " В городе больше профилей этой категории нет."
+        count = len(matches)
+        verb = _plural(count, "Подходит", "Подходят", "Подходят")
+        headline = f"{verb} {count} из {of_total} {where} на {day}."
+        if count > 3:
+            headline += " Показываем 3 лучших."
+        elif total == count:
+            headline += " Других подрядчиков этой категории в городе нет."
         status = "matched"
     elif candidates:
-        message = _empty_message(counts, len(candidates), f"Категория {where}", event_date, busy_only)
+        if total == 1:
+            headline = f"Единственный подрядчик {where} не подходит на {day}."
+        else:
+            headline = f"Ни один из {of_total} {where} не подходит на {day}."
         status = "no_match"
     else:
         elsewhere = Counter(str(p.get("city")) for p in catalog
                             if category in {_key(x) for x in _list_field(p.get("categories"))})
-        message = f"В каталоге нет подрядчиков категории {where}."
+        headline = f"В городе {city_label} нет подрядчиков категории «{category_label}»."
         if elsewhere:
-            message += " Эта категория есть: " + ", ".join(f"{c} — {n}" for c, n in sorted(elsewhere.items())) + "."
+            listed = ", ".join(f"{c} ({n} {_plural(n, 'подрядчик', 'подрядчика', 'подрядчиков')})"
+                               for c, n in sorted(elsewhere.items()))
+            hints = [f"Эта категория есть в другом городе: {listed}. Выберите его, если мероприятие можно провести там."
+                     if len(elsewhere) == 1 else
+                     f"Эта категория есть в других городах: {listed}."]
+        else:
+            hints = ["Такой категории нет в каталоге ни в одном городе."]
         status = "category_not_found"
-    return {"status": status, "results": results, "message": message, "counts": summary}
+    message = " ".join([headline, *hints])
+    return {"status": status, "results": results, "message": message, "headline": headline,
+            "hints": hints, "counts": summary}

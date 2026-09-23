@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from matching import _key, _money
+from matching import FORMAT_PLURAL, _key, _money
 
 LANGUAGE_FORMS = {"русский": "русском", "казахский": "казахском", "английский": "английском"}
 
@@ -32,13 +32,15 @@ def _differences(card: dict[str, Any], shown: list[dict[str, Any]], event_format
              if sum(lang in c["languages"] for c in shown) == 1]
     if langs:
         forms = ", ".join(LANGUAGE_FORMS.get(_key(lang), lang) for lang in langs)
-        diffs.append(f"единственный из показанных работает на {forms}")
+        diffs.append(f"среди показанных только этот вариант работает на {forms}")
     if lead and not all(leads):
-        diffs.append(f"«{event_format}» — первый формат в профиле, основное направление")
+        diffs.append(f"{FORMAT_PLURAL.get(event_format, event_format)} — основное направление "
+                     "(в профиле стоят первыми)")
     if card.get("max_hours") is not None and hours and card["max_hours"] == max(hours) and _unique(hours, max(hours)):
         diffs.append(f"дольше всех на площадке: до {card['max_hours']} ч")
     if len(card["event_formats"]) == 1 and len(shown) > 1:
-        diffs.append(f"работает только с форматом «{card['event_formats'][0]}»")
+        only = _key(card["event_formats"][0])
+        diffs.append(f"берёт только {FORMAT_PLURAL.get(only, only)}")
     return diffs
 
 

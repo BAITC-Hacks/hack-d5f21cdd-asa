@@ -44,7 +44,7 @@ class MatchingTests(unittest.TestCase):
             "category_candidates": 5, "busy": 1, "over_budget": 1,
             "format": 1, "duration": 1, "price_missing": 0,
         })
-        self.assertIn("заняты", result["message"])
+        self.assertIn("кроме даты", result["message"])
         self.assertIn("500 000", next(f["text"] for f in result["results"][0]["facts"] if f["id"] == "budget"))
 
     def test_three_outcomes_and_stable_order_without_cheapest_bonus(self):
@@ -56,7 +56,7 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(recommend({**BASE, "category": "Флорист"}, rows)["status"], "category_not_found")
         empty = recommend({**BASE, "budget_kzt": 0}, rows)
         self.assertEqual(empty["status"], "no_match")
-        self.assertIn("цену от выше бюджета", empty["message"])
+        self.assertIn("кроме бюджета", empty["message"])
 
     def test_optional_duration_and_language(self):
         rows = [provider("A", max_hours="", languages="английский"), provider("B", max_hours="5")]

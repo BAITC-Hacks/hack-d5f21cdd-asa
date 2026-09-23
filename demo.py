@@ -15,7 +15,9 @@ def show(title: str, request: dict, selector=None) -> None:
     response = run(request, selector)
     print(f"\n=== {title}")
     print(f"    запрос: {request}")
-    print(f"    [{response['status']}, {response['elapsed_ms']} мс] {response['message']}")
+    print(f"    [{response['status']}, {response['elapsed_ms']} мс] {response['headline']}")
+    for hint in response["hints"]:
+        print(f"    → {hint}")
     for card in response["results"]:
         flags = [label for flag, label in (("synthetic", "синтетика"), ("price_imputed", "цена проставлена"),
                                            ("city_imputed", "город проставлен")) if card[flag]]

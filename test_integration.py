@@ -47,7 +47,7 @@ class DefinitionOfDoneTests(unittest.TestCase):
         autumn = run(SCENARIOS["1. Плотная категория: ведущий на свадьбу, 15 октября"]["request"])
         winter = run(SCENARIOS["2. Тот же запрос 19 декабря — дело в занятости"]["request"])
         self.assertNotEqual([c["id"] for c in autumn["results"]], [c["id"] for c in winter["results"]])
-        self.assertIn("заняты на 19 декабря", winter["message"])
+        self.assertIn("кроме даты: 19 декабря у них занято", winter["message"])
         self.assertIn("19 декабря", winter["results"][0]["reason"])
 
     def test_explanations_are_not_interchangeable(self):
@@ -74,8 +74,8 @@ class DefinitionOfDoneTests(unittest.TestCase):
 
     def test_empty_results_are_explained_in_words(self):
         busy = run(SCENARIOS["7. Пусто: все залы заняты 6 декабря"]["request"])
-        self.assertIn("заняты на 6 декабря", busy["message"])
-        self.assertIn("Ближайший вариант", busy["message"])
+        self.assertIn("кроме даты: 6 декабря у них занято", busy["message"])
+        self.assertIn("Ближайшие свободные дни", busy["message"])
         missing = run(SCENARIOS["9. Пусто: лайв-бэнда нет в Астане"]["request"])
         self.assertIn("Алматы", missing["message"])
 
