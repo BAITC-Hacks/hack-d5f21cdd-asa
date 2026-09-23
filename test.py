@@ -1,8 +1,10 @@
 """Behavior checks for matching and grounded explanations."""
 
 import json
+import tempfile
 import unittest
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import patch
 
 from comparison import add_comparative_facts, openai_compare
@@ -80,9 +82,29 @@ class MatchingTests(unittest.TestCase):
 
     def test_request_validation(self):
         for change in ({"date": "2027-01-01"}, {"budget_kzt": -1},
-                       {"duration_hours": 0}, {"budget_kzt": "12.5"}):
+                       {"duration_hours": 0}, {"budget_kzt": "12.5"},
+                       {"date": "20261015"}, {"date": "2026-W42-4"}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 recommend({**BASE, **change}, [])
+
+    def test_empty_csv_and_missing_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            empty = Path(directory) / "empty.csv"
+            empty.write_text("", encoding="utf-8")
+            self.assertEqual(load_providers(empty), [])
+        result = recommend(BASE, [])
+        self.assertEqual(result["status"], "category_not_found")
+        self.assertEqual(result["results"], [])
+        with self.assertRaises(ValueError):
+            recommend({**BASE, "city": ""}, [])
+
+    def test_pipe_fields_and_limit_of_three(self):
+        rows = [provider(str(i), categories="Фотограф|Ведущий",
+                         event_formats="свадьба|корпоратив", languages="казахский|русский",
+                         busy_dates="2026-10-14|2026-10-16") for i in range(5)]
+        result = recommend({**BASE, "language": "русский"}, rows)
+        self.assertEqual([card["id"] for card in result["results"]], ["0", "1", "2"])
+        self.assertEqual(result["status"], "matched")
 
 
 class ExplanationTests(unittest.TestCase):

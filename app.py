@@ -62,6 +62,9 @@ def simulated_llm_failure(_candidate):
 
 def search_request() -> tuple[dict | None, bool, bool]:
     cities, categories = catalog_options()
+    if not cities or not categories:
+        st.error("Каталог подрядчиков пуст. Проверьте файл data/providers.csv.")
+        return None, False, False
     names = ["Свой запрос", *SCENARIOS]
     # ?scenario=2 opens a demo request directly for a presentation.
     scenario_param = st.query_params.get("scenario", "0")
@@ -78,20 +81,27 @@ def search_request() -> tuple[dict | None, bool, bool]:
     )
     preset = SCENARIOS.get(preset_name, {}).get("request", {})
     key = f"form-{names.index(preset_name)}"
+    try:
+        preset_date = date.fromisoformat(preset.get("date", "2026-10-15"))
+    except (TypeError, ValueError):
+        preset_date = MIN_DATE
+    if not MIN_DATE <= preset_date <= MAX_DATE:
+        preset_date = MIN_DATE
 
     with st.form(key):
-        city = st.selectbox("Город", cities, index=cities.index(preset.get("city", "Алматы")))
+        city_name = preset.get("city", "Алматы")
+        city = st.selectbox("Город", cities, index=cities.index(city_name) if city_name in cities else 0)
         event_date = st.date_input(
-            "Дата", value=date.fromisoformat(preset.get("date", "2026-10-15")),
+            "Дата", value=preset_date,
             min_value=MIN_DATE, max_value=MAX_DATE, format="DD.MM.YYYY",
         )
         category = st.selectbox(
             "Категория подрядчика", categories,
-            index=categories.index(preset.get("category", "Ведущий")),
+            index=categories.index(preset["category"]) if preset.get("category") in categories else 0,
         )
         event_format = st.selectbox(
             "Формат", FORMATS,
-            index=FORMATS.index(preset.get("event_format", "свадьба")),
+            index=FORMATS.index(preset["event_format"]) if preset.get("event_format") in FORMATS else 0,
         )
         budget = st.number_input(
             "Бюджет, ₸", min_value=0, step=50_000,
@@ -103,7 +113,7 @@ def search_request() -> tuple[dict | None, bool, bool]:
         )
         language = st.selectbox(
             "Язык", LANGUAGES,
-            index=LANGUAGES.index(preset.get("language") or "не важно"),
+            index=LANGUAGES.index(preset["language"]) if preset.get("language") in LANGUAGES else 0,
         )
         submitted = st.form_submit_button(
             "Найти TOP‑3  →", type="primary", use_container_width=True,

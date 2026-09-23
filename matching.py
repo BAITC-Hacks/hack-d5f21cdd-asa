@@ -233,6 +233,11 @@ def recommend(request: dict[str, Any], providers: Iterable[dict[str, Any]] | Non
     language = _key(request.get("language"))
     if not all((city, category, event_format, date_text)) or budget is None or budget < 0:
         raise ValueError("Заполните город, дату, тип мероприятия, категорию и бюджет (целое число от 0).")
+    # date.fromisoformat also accepts compact/week dates on some Python versions.
+    # busy_dates in the CSV are canonical YYYY-MM-DD, so accepting those forms
+    # would let a busy contractor pass the availability filter.
+    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date_text) is None:
+        raise ValueError("Дата должна быть в формате ГГГГ-ММ-ДД, например 2026-10-15.")
     try:
         event_date = date.fromisoformat(date_text)
     except ValueError as exc:
