@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 
 
 CORE_IDS = ("format", "available", "budget")
-OPTIONAL_IDS = ("profile", "language", "duration", "synthetic", "city_imputed")
+OPTIONAL_IDS = ("compare", "profile", "language", "duration", "synthetic", "city_imputed")
 Selector = Callable[[dict[str, Any]], list[str]]
 
 
@@ -24,7 +24,7 @@ def _facts(candidate: dict[str, Any]) -> dict[str, str]:
 
 def _fallback_ids(facts: dict[str, str]) -> list[str]:
     ids = [fact_id for fact_id in CORE_IDS if fact_id in facts]
-    ids += [fact_id for fact_id in ("language", "duration", "profile", "synthetic", "city_imputed") if fact_id in facts]
+    ids += [fact_id for fact_id in ("compare", "language", "duration", "profile", "synthetic", "city_imputed") if fact_id in facts]
     return ids
 
 
@@ -37,6 +37,8 @@ def _valid_ids(ids: Any, facts: dict[str, str], candidate: dict[str, Any]) -> bo
         return False
     if "profile" in facts and "profile" not in ids:
         return False
+    if "compare" in facts and "compare" not in ids:
+        return False
     if candidate.get("synthetic") and "synthetic" not in ids:
         return False
     if candidate.get("city_imputed") and "city_imputed" not in ids:
@@ -44,19 +46,34 @@ def _valid_ids(ids: Any, facts: dict[str, str], candidate: dict[str, Any]) -> bo
     return True
 
 
+def _lower(text: str) -> str:
+    return text[0].lower() + text[1:] if text else text
+
+
+def _upper(text: str) -> str:
+    return text[0].upper() + text[1:] if text else text
+
+
 def _render(ids: list[str], facts: dict[str, str], candidate: dict[str, Any]) -> str:
     # Only these exact verified facts enter the final text. Model prose is never
     # trusted as evidence, so dates, prices and claims cannot be hallucinated.
-    opening = "Синтетический профиль для демонстрации: " if candidate.get("synthetic") else ""
-    first = "; ".join(facts[x][0].lower() + facts[x][1:] if i else facts[x]
-                      for i, x in enumerate(CORE_IDS))
+    core = "; ".join(_lower(facts[x]) for x in CORE_IDS)
     extras = [facts[x] for x in ("language", "duration", "city_imputed") if x in ids]
     if extras:
-        first += "; " + "; ".join(x[0].lower() + x[1:] for x in extras)
-    first = opening + first.rstrip(".!?") + "."
-    if "profile" in ids:
-        return first + " " + facts["profile"].rstrip(".!?") + "."
-    return first
+        core += "; " + "; ".join(_lower(x) for x in extras)
+    core = core.rstrip(".!?")
+    profile = facts["profile"].rstrip(".!?") if "profile" in ids else ""
+
+    if "compare" in ids:
+        # What sets this card apart goes first; shared checks go second. Still 2 sentences.
+        first = facts["compare"].rstrip(".!?") + (f"; {_lower(profile)}" if profile else "")
+        sentences = [first, core]
+    else:
+        sentences = [core] + ([profile] if profile else [])
+    text = " ".join(_upper(x) + "." for x in sentences)
+    if candidate.get("synthetic"):
+        text = "Синтетический профиль для демонстрации: " + _lower(text)
+    return text
 
 
 def openai_select_evidence(candidate: dict[str, Any]) -> list[str]:
@@ -75,7 +92,7 @@ def openai_select_evidence(candidate: dict[str, Any]) -> list[str]:
         "input": [
             {"role": "developer", "content": (
                 "Choose evidence IDs for a short Russian contractor recommendation. "
-                "The mandatory IDs are format, available, budget and profile when present. "
+                "The mandatory IDs are format, available, budget, and compare and profile when present. "
                 "Also include synthetic and city_imputed when present. "
                 "Optionally include language and duration when useful. "
                 "Use only supplied IDs. Return JSON; no unsupported claims."
