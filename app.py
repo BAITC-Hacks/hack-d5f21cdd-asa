@@ -197,11 +197,24 @@ def render_card(card: dict, debug: bool, rank: int) -> None:
                 st.markdown(f"{mark} {fact['text']}")
 
 
+def use_key_from_secrets() -> None:
+    """Allow the key in .streamlit/secrets.toml (git-ignored) instead of a shell variable."""
+    if os.getenv("OPENAI_API_KEY"):
+        return
+    try:
+        key = st.secrets.get("OPENAI_API_KEY", "")
+    except Exception:  # no secrets file: run without the model
+        return
+    if key:
+        os.environ["OPENAI_API_KEY"] = str(key)
+
+
 def main() -> None:
     st.set_page_config(
         page_title="ASA | подбор подрядчиков", page_icon="✦", layout="wide",
         initial_sidebar_state="collapsed",
     )
+    use_key_from_secrets()
     css = Path(__file__).with_name("styles.css").read_text(encoding="utf-8")
     st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
     st.markdown("""

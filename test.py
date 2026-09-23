@@ -1,6 +1,7 @@
 """Behavior checks for matching and grounded explanations."""
 
 import json
+import os
 import tempfile
 import unittest
 from io import BytesIO
@@ -10,6 +11,9 @@ from unittest.mock import patch
 from comparison import add_comparative_facts, openai_compare
 from explanations import explain_response, generate_reason
 from matching import load_providers, recommend
+
+# Tests never call the real API, even when the shell has a key set.
+os.environ.pop("OPENAI_API_KEY", None)
 
 
 BASE = {

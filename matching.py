@@ -67,20 +67,29 @@ def _display_date(value: date) -> str:
     return f"{_display_day(value)} {value.year} года"
 
 
-def _profile_excerpt(description: str) -> str:
-    """Return a short exact quote from the profile, without inventing claims."""
+def profile_excerpts(description: str) -> list[str]:
+    """All short exact quotes from the profile, in reading order, without inventing claims."""
     clean = re.sub(r"\s+", " ", description).strip()
+    found: list[str] = []
     for part in re.split(r"(?<=[.!?])\s+", clean):
         part = part.strip(" •\"«»")
         if 24 <= len(part) <= 160:
-            return part.rstrip(".!?")
+            found.append(part.rstrip(".!?"))
     # Some catalog descriptions have no sentence punctuation at all ("…13 лет Вел свадьбы…"):
     # treat "lowercase/digit + space + Capitalized word" as a sentence boundary.
     for part in re.split(r"(?<=[а-яёa-z0-9])\s+(?=[А-ЯЁA-Z][а-яёa-z])", clean):
-        part = part.strip(" •\"«»-—")
-        if 24 <= len(part) <= 160:
-            return part.rstrip(".!?,;:")
-    return clean[:140].rsplit(" ", 1)[0].rstrip(".,;: ") if len(clean) >= 24 else ""
+        part = part.strip(" •\"«»-—").rstrip(".!?,;:")
+        if 24 <= len(part) <= 160 and not any(part in quote or quote in part for quote in found):
+            found.append(part)
+    if not found and len(clean) >= 24:
+        found.append(clean[:140].rsplit(" ", 1)[0].rstrip(".,;: "))
+    return found
+
+
+def _profile_excerpt(description: str) -> str:
+    """Return the first short exact quote from the profile."""
+    excerpts = profile_excerpts(description)
+    return excerpts[0] if excerpts else ""
 
 
 def load_providers(path: str | Path = DATA_PATH) -> list[dict[str, Any]]:

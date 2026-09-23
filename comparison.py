@@ -7,10 +7,12 @@ import os
 from typing import Any, Callable
 from urllib.request import Request, urlopen
 
-from matching import _key, _money
+from matching import _key, _money, profile_excerpts
 
 ComparisonSelector = Callable[[dict[str, Any]], list[dict[str, Any]]]
 QUALITY_IDS = {"price_estimated", "city_imputed", "synthetic"}
+# Which advantage leads the reason: the rarest difference first.
+HIGHLIGHT_ORDER = ("language_", "price_lowest", "hours_longest", "price_lower", "profile")
 
 
 def _point(point_id: str, text: str) -> dict[str, str]:
@@ -32,13 +34,34 @@ def _quality_notes(card: dict[str, Any]) -> list[dict[str, str]]:
     return notes
 
 
+def _distinct_profiles(shown: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Near-duplicate profiles (same template description) must not get the same quote.
+
+    If a card's quote repeats another card's, take the first sentence of its own
+    description that does not occur in the other shown descriptions.
+    """
+    quotes = [_fact(card, "profile") for card in shown]
+    result = []
+    for card, quote in zip(shown, quotes):
+        if quote and quotes.count(quote) > 1:
+            others = " ".join(" ".join(str(o.get("description", "")).split()) for o in shown if o is not card)
+            unique = next((q for q in profile_excerpts(str(card.get("description", ""))) if q not in others), None)
+            if unique:
+                card = {**card, "facts": [
+                    {**fact, "text": f"В описании профиля: «{unique}»"} if fact["id"] == "profile" else fact
+                    for fact in card["facts"]
+                ]}
+        result.append(card)
+    return result
+
+
 def _comparison(card: dict[str, Any], shown: list[dict[str, Any]]) -> dict[str, list[dict[str, str]]]:
     pros: list[dict[str, str]] = []
     cons: list[dict[str, str]] = []
     price = card["price_from_kzt"]
     prices = [other["price_from_kzt"] for other in shown]
     cheapest, most_expensive = min(prices), max(prices)
-    price_note = " (по ценам «от» в каталоге; часть цен оценочная)" if any(
+    price_note = " (часть цен оценочная)" if any(
         other.get("price_imputed") for other in shown
     ) else ""
 
@@ -130,6 +153,8 @@ def openai_compare(payload: dict[str, Any]) -> list[dict[str, Any]]:
         }},
         "max_output_tokens": 350,
     }
+    if body["model"].startswith(("gpt-4", "gpt-3")):
+        body["temperature"] = 0  # same request -> same choice; reasoning models reject this field
     request = Request(
         "https://api.openai.com/v1/responses",
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -159,6 +184,7 @@ def add_comparative_facts(
         return {**response, "results": [{**card, "comparison": {"pros": pros, "cons": _quality_notes(card)},
                                           "comparison_source": "catalog"}]}
 
+    shown = _distinct_profiles(shown)
     options = {card["id"]: _comparison(card, shown) for card in shown}
     selected = {
         card_id: {
@@ -196,8 +222,13 @@ def add_comparative_facts(
     for card in shown:
         comparison = selected[card["id"]]
         facts = list(card["facts"])
-        highlighted = comparison["pros"][:1] + comparison["cons"][:1]
+        # The reason says why the card is here: its main advantage. Limitations stay in
+        # the "Что учесть" column. The format is already part of the shared checks.
+        pros = sorted((point for point in comparison["pros"] if point["id"] != "format"),
+                      key=lambda point: next((i for i, prefix in enumerate(HIGHLIGHT_ORDER)
+                                              if point["id"].startswith(prefix)), len(HIGHLIGHT_ORDER)))
+        highlighted = (pros or comparison["cons"])[:1]
         if highlighted:
-            facts.append(_point("compare", "; ".join(point["text"] for point in highlighted)))
+            facts.append(_point("compare", highlighted[0]["text"]))
         results.append({**card, "comparison": comparison, "comparison_source": source, "facts": facts})
     return {**response, "results": results}

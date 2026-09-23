@@ -1,5 +1,6 @@
 """End-to-end checks of the Definition of Done on the real catalog. Run: python -m unittest"""
 
+import os
 import re
 import unittest
 from unittest.mock import patch
@@ -7,6 +8,9 @@ from unittest.mock import patch
 from demo_scenarios import SCENARIOS
 from matching import load_providers
 from service import run
+
+# Tests never call the real API, even when the shell has a key set.
+os.environ.pop("OPENAI_API_KEY", None)
 
 CATALOG = {row["id"]: row for row in load_providers()}
 GENERIC_PHRASES = ("отличный выбор", "идеально подойдёт", "лучший выбор", "для вашего мероприятия")
@@ -119,6 +123,32 @@ class DefinitionOfDoneTests(unittest.TestCase):
     def test_response_time(self):
         for scenario in SCENARIOS.values():
             self.assertLess(run(scenario["request"])["elapsed_ms"], 10_000)
+
+    def test_near_duplicate_profiles_get_different_quotes(self):
+        # Two live bands share price, formats and the first sentence of their descriptions.
+        request = {"city": "Алматы", "date": "2026-10-14", "event_format": "свадьба",
+                   "category": "Лайв-бэнд", "budget_kzt": 1_500_000}
+        cards = run(request)["results"]
+        quotes = [re.findall(r"«[^»]{24,}»", card["reason"]) for card in cards]
+        self.assertEqual(len({tuple(q) for q in quotes}), len(cards))
+
+    def test_every_answer_is_distinguishable_and_readable(self):
+        """DoD on the whole catalog, not only on demo requests."""
+        cities = sorted({row["city"] for row in CATALOG.values()})
+        categories = sorted({c for row in CATALOG.values() for c in row["categories"]})
+        dates = ["2026-09-26", "2026-10-14", "2026-11-14", "2026-12-06"]
+        for city in cities:
+            for category in categories:
+                for event_format in ("свадьба", "той", "корпоратив", "юбилей"):
+                    for day in dates:
+                        request = {"city": city, "date": day, "event_format": event_format,
+                                   "category": category, "budget_kzt": 10_000_000}
+                        cards = run(request)["results"]
+                        with self.subTest(**request):
+                            anonymous = [c["reason"].replace(c["name"], "___") for c in cards]
+                            self.assertEqual(len(set(anonymous)), len(anonymous))
+                            for reason in anonymous:
+                                self.assertIsNone(re.search(r"; [А-ЯЁ]", reason))
 
 
 if __name__ == "__main__":
