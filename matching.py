@@ -105,7 +105,7 @@ def _score_parts(event_format: str, formats_ordered: list[str], description: str
     stems = FORMAT_STEMS.get(event_format, (event_format,))
     hits = sum(1 for stem in set(stems) if stem in description)
     return {
-        # The format listed first is the provider's main line of work.
+        # Earlier positions get more weight; list order is only a heuristic.
         "specialization": max(0, 10 - 4 * position),
         # The profile text itself talks about this kind of event.
         "description": min(10, 5 * hits),

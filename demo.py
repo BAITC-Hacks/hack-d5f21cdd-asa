@@ -23,7 +23,12 @@ def show(title: str, request: dict, selector=None) -> None:
                                            ("city_imputed", "город проставлен")) if card[flag]]
         extra = f" [{', '.join(flags)}]" if flags else ""
         print(f"  • {card['name']} — от {_money(card['price_from_kzt'])}, score {card['score']}, "
-              f"{card['reason_source']}{extra}\n    {card['reason']}")
+              f"сравнение: {card['comparison_source']}{extra}")
+        for label, points in (("Плюсы", card["comparison"]["pros"]),
+                              ("Что учесть", card["comparison"]["cons"])):
+            print(f"    {label}:")
+            for point in points:
+                print(f"      - {point['text']}")
 
 
 def main() -> None:
@@ -31,7 +36,7 @@ def main() -> None:
     for title, scenario in SCENARIOS.items():
         show(title, scenario["request"])
     first = next(iter(SCENARIOS.values()))["request"]
-    show("10. Сбой LLM: тот же запрос, объяснения не пропадают (fallback)", first, llm_outage)
+    show("10. Сбой LLM: сравнение остаётся (fallback)", first, llm_outage)
 
 
 if __name__ == "__main__":

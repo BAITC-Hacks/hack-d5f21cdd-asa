@@ -1,13 +1,12 @@
-"""Web UI. Run: python -m streamlit run app.py
-
-The page only displays what service.run() returns; it never re-filters or re-ranks.
-"""
+"""Streamlit UI for the contractor shortlist. Run: python -m streamlit run app.py."""
 
 from __future__ import annotations
 
 import os
 import re
 from datetime import date
+from html import escape
+from pathlib import Path
 
 import streamlit as st
 
@@ -18,12 +17,12 @@ from service import run
 FORMATS = ["свадьба", "той", "корпоратив", "конференция", "юбилей", "день рождения"]
 LANGUAGES = ["не важно", "русский", "казахский", "английский"]
 OUTCOME = {
-    "matched": ("Подобрали", "success"),
-    "category_not_found": ("В этом городе такой категории нет", "error"),
-    "no_match": ("Кандидаты есть, но ни один не проходит по условиям", "warning"),
+    "matched": "Подходящие подрядчики",
+    "category_not_found": "В этом городе нет такой категории",
+    "no_match": "Пока нет подходящих вариантов",
 }
 SCORE_TITLES = {
-    "specialization": "Формат — основное направление (стоит в профиле первым)",
+    "specialization": "Позиция формата в списке каталога",
     "description": "Описание говорит об этом виде событий",
     "language": "Совпал выбранный язык",
     "duration": "Длительность подтверждена данными",
@@ -36,13 +35,19 @@ COUNT_TITLES = {
     "duration": "Не работают столько часов",
     "price_missing": "Без указанной цены",
 }
+FACT_TITLES = {
+    "compare": "Отличие от других карточек", "profile": "Из описания профиля",
+    "format": "Формат", "available": "Календарь", "budget": "Бюджет",
+    "category": "Категория", "language": "Язык", "duration": "Длительность",
+    "synthetic": "Синтетика", "city_imputed": "Город",
+}
 
 
 @st.cache_data
 def catalog_options() -> tuple[list[str], list[str]]:
     rows = load_providers()
-    cities = sorted({r["city"] for r in rows})
-    categories = sorted({c for r in rows for c in r["categories"]})
+    cities = sorted({row["city"] for row in rows})
+    categories = sorted({category for row in rows for category in row["categories"]})
     return cities, categories
 
 
@@ -55,47 +60,73 @@ def simulated_llm_failure(_candidate):
     raise TimeoutError("simulated LLM outage")
 
 
-def sidebar_request() -> tuple[dict | None, bool, bool]:
+def search_request() -> tuple[dict | None, bool, bool]:
     cities, categories = catalog_options()
-    st.sidebar.header("Параметры заказа")
-    names = ["— свой запрос —", *SCENARIOS]
-    # ?scenario=2 opens a demo scenario directly (handy for the demo and README screenshots).
-    from_link = st.query_params.get("scenario", "0")
-    start = int(from_link) if from_link.isdigit() and int(from_link) < len(names) else 0
-    preset_name = st.sidebar.selectbox("Готовый демо-сценарий", names, index=start)
+    names = ["Свой запрос", *SCENARIOS]
+    # ?scenario=2 opens a demo request directly for a presentation.
+    scenario_param = st.query_params.get("scenario", "0")
+    initial_scenario = int(scenario_param) if scenario_param.isdigit() else 0
+    initial_scenario = min(initial_scenario, len(names) - 1)
+    st.markdown(
+        '<div class="search-intro"><span class="section-index">01 / ПАРАМЕТРЫ</span>'
+        '<h2>Ваше событие</h2></div>',
+        unsafe_allow_html=True,
+    )
+    preset_name = st.selectbox(
+        "Быстрый сценарий", names, index=initial_scenario,
+        help="Выберите пример и при желании измените поля."
+    )
     preset = SCENARIOS.get(preset_name, {}).get("request", {})
-    key = f"form-{names.index(preset_name)}"  # new key -> widgets reset to the preset values
+    key = f"form-{names.index(preset_name)}"
 
-    with st.sidebar.form(key):
+    with st.form(key):
         city = st.selectbox("Город", cities, index=cities.index(preset.get("city", "Алматы")))
-        event_date = st.date_input("Дата мероприятия", value=date.fromisoformat(preset.get("date", "2026-10-15")),
-                                   min_value=MIN_DATE, max_value=MAX_DATE, format="DD.MM.YYYY")
-        event_format = st.selectbox("Тип мероприятия", FORMATS,
-                                    index=FORMATS.index(preset.get("event_format", "свадьба")))
-        category = st.selectbox("Категория подрядчика", categories,
-                                index=categories.index(preset.get("category", "Ведущий")))
-        budget = st.number_input("Бюджет, ₸", min_value=0, step=50_000,
-                                 value=int(preset.get("budget_kzt", 1_000_000)))
-        st.caption("Опционально")
-        duration = st.number_input("Длительность, ч (0 — не важно)", min_value=0, max_value=24,
-                                   value=int(preset.get("duration_hours") or 0))
-        language = st.selectbox("Язык", LANGUAGES, index=LANGUAGES.index(preset.get("language") or "не важно"))
-        submitted = st.form_submit_button("Подобрать", type="primary", use_container_width=True)
+        event_date = st.date_input(
+            "Дата", value=date.fromisoformat(preset.get("date", "2026-10-15")),
+            min_value=MIN_DATE, max_value=MAX_DATE, format="DD.MM.YYYY",
+        )
+        category = st.selectbox(
+            "Категория подрядчика", categories,
+            index=categories.index(preset.get("category", "Ведущий")),
+        )
+        event_format = st.selectbox(
+            "Формат", FORMATS,
+            index=FORMATS.index(preset.get("event_format", "свадьба")),
+        )
+        budget = st.number_input(
+            "Бюджет, ₸", min_value=0, step=50_000,
+            value=int(preset.get("budget_kzt", 1_000_000)),
+        )
+        duration = st.number_input(
+            "Часы · 0 = любые", min_value=0, max_value=24,
+            value=int(preset.get("duration_hours") or 0),
+        )
+        language = st.selectbox(
+            "Язык", LANGUAGES,
+            index=LANGUAGES.index(preset.get("language") or "не важно"),
+        )
+        submitted = st.form_submit_button(
+            "Найти TOP‑3  →", type="primary", use_container_width=True,
+        )
 
-    st.sidebar.divider()
-    fail_llm = st.sidebar.toggle("Имитировать сбой ИИ", help="Проверка устойчивости: даже если модель "
-                                 "недоступна, объяснения остаются — они собираются по шаблону из проверенных фактов.")
-    debug = st.sidebar.toggle("Подробности подбора", value=st.query_params.get("debug") == "1",
-                              help="Показать баллы каждой карточки, проверенные факты "
-                                   "и сколько подрядчиков отсеяно по каждой причине.")
-    st.sidebar.caption("ИИ подключён: модель выбирает, какие факты подчеркнуть." if os.getenv("OPENAI_API_KEY") else
-                       "ИИ не подключён (нет OPENAI_API_KEY): объяснения собираются по шаблону "
-                       "из проверенных фактов.")
+    with st.expander("Настройки демонстрации"):
+        fail_llm = st.toggle("Имитировать сбой ИИ", help="При сбое сравнение строится из данных каталога.")
+        debug = st.toggle(
+            "Подробности подбора",
+            value=st.query_params.get("debug") == "1",
+            help="Показать баллы, факты и причины отсева.",
+        )
+        st.caption(
+            "ИИ сравнит варианты одним запросом." if os.getenv("OPENAI_API_KEY")
+            else "Без API-ключа сравнение строится из данных каталога."
+        )
 
     if not (submitted or preset_name in SCENARIOS):
         return None, fail_llm, debug
-    request = {"city": city, "date": event_date.isoformat(), "event_format": event_format,
-               "category": category, "budget_kzt": int(budget)}
+    request = {
+        "city": city, "date": event_date.isoformat(), "event_format": event_format,
+        "category": category, "budget_kzt": int(budget),
+    }
     if duration:
         request["duration_hours"] = int(duration)
     if language != "не важно":
@@ -103,89 +134,146 @@ def sidebar_request() -> tuple[dict | None, bool, bool]:
     return request, fail_llm, debug
 
 
-def render_card(card: dict, debug: bool) -> None:
-    with st.container(border=True):
-        st.markdown(f"#### {card['name']}")
-        st.caption(f"{' · '.join(card['categories'])} · {card['city']} · {card['id']}")
-        price = f"от {_money(card['price_from_kzt'])}"
-        st.markdown(f"**{price}**" + (" *(оценочная)*" if card["price_imputed"] else ""))
+def _point_list(points: list[dict], kind: str, empty_text: str) -> str:
+    items = "".join(
+        f'<li title="{escape(point["text"], quote=True)}">{escape(point["text"])}</li>'
+        for point in points
+    )
+    if not items:
+        items = f'<li class="muted">{escape(empty_text)}</li>'
+    return f'<ul class="point-list {kind}">{items}</ul>'
 
-        badges = []
-        if card["synthetic"]:
-            badges.append(":green-background[синтетический профиль]")
-        if card["price_imputed"]:
-            badges.append(":orange-background[цена проставлена при подготовке]")
-        if card["city_imputed"]:
-            badges.append(":orange-background[город проставлен при подготовке]")
-        if badges:
-            st.markdown(" ".join(badges))
 
-        st.write(keep_numbers_together(card["reason"]))
-        st.caption("Факты для объяснения отобрал ИИ" if card["reason_source"] == "llm"
-                   else "Объяснение собрано по шаблону из проверенных фактов")
+def render_card(card: dict, debug: bool, rank: int) -> None:
+    comparison = card.get("comparison") or {"pros": [], "cons": []}
+    source = {
+        "llm": "ИИ сравнил варианты · по проверенным фактам",
+        "fallback": "Сравнение по данным каталога",
+        "catalog": "Единственный подходящий вариант",
+    }.get(card.get("comparison_source"), "Сравнение по данным каталога")
+    badges = []
+    if card["synthetic"]:
+        badges.append('<span class="provider-tag">демо-профиль</span>')
+    if card["price_imputed"]:
+        badges.append('<span class="provider-tag">оценочная цена</span>')
+    if card["city_imputed"]:
+        badges.append('<span class="provider-tag">город добавлен</span>')
+    tags = f'<div class="provider-tags">{"".join(badges)}</div>' if badges else ""
+    pros = _point_list(comparison["pros"], "pros", "Нет подтверждённых преимуществ по сравнению с другими.")
+    cons = _point_list(comparison["cons"], "cons", "По указанным данным явных ограничений нет.")
+    st.markdown(f"""
+<article class="provider-card rank-{rank}">
+  <div class="provider-main">
+    <div class="provider-topline"><span class="provider-rank">{rank:02d}</span><span class="provider-id">{escape(card['id'])}</span></div>
+    <div class="provider-name">{escape(card['name'])}</div>
+    <div class="provider-meta">{escape(' · '.join(card['categories']))}<span class="meta-dot">◆</span>{escape(card['city'])}</div>
+    <div class="provider-price"><span>СТОИМОСТЬ ОТ</span><strong>{escape(_money(card['price_from_kzt']))}</strong></div>
+    {tags}
+  </div>
+  <div class="provider-comparison pros-column">
+    <div class="provider-label pros-label"><span>+</span> Плюсы</div>{pros}
+  </div>
+  <div class="provider-comparison cons-column">
+    <div class="provider-label cons-label"><span>−</span> Что учесть</div>{cons}
+  </div>
+  <div class="provider-reason">{escape(keep_numbers_together(card['reason']))}</div>
+  <div class="provider-source">{escape(source)}</div>
+</article>
+""", unsafe_allow_html=True)
 
-        if debug:
-            with st.expander(f"Баллы: {card['score']}"):
-                lines = ["- База за прохождение всех условий: **70**"]
-                lines += [f"- {SCORE_TITLES.get(k, k)}: **+{v}**" for k, v in card["score_parts"].items()]
-                st.markdown("\n".join(lines))
-            with st.expander("Подтверждённые факты"):
-                used = set(card["evidence_ids"])
-                st.caption("✅ — факт использован в объяснении")
-                st.markdown("\n".join(f"- {'✅ ' if fact['id'] in used else ''}{fact['text']}"
-                                      for fact in card["facts"]))
+    if debug:
+        with st.expander(f"Как получен балл {card['score']}"):
+            lines = ["- База за прохождение условий: **70**"]
+            lines += [f"- {SCORE_TITLES.get(k, k)}: **+{v}**" for k, v in card["score_parts"].items()]
+            st.markdown("\n".join(lines))
+        with st.expander("Проверенные факты"):
+            used = set(card["evidence_ids"])
+            for fact in card["facts"]:
+                mark = "✓" if fact["id"] in used else "▫"
+                st.markdown(f"{mark} **{FACT_TITLES.get(fact['id'], fact['id'])}:** {fact['text']}")
 
 
 def main() -> None:
-    st.set_page_config(page_title="Подбор подрядчиков", page_icon="🎉", layout="wide")
-    st.title("Подбор event-подрядчиков")
-    st.caption("До трёх подрядчиков из каталога и конкретное объяснение, почему каждый из них здесь. "
-               "Занятые на дату, дороже бюджета и не берущие формат в выдачу не попадают.")
+    st.set_page_config(
+        page_title="ASA | подбор подрядчиков", page_icon="✦", layout="wide",
+        initial_sidebar_state="collapsed",
+    )
+    css = Path(__file__).with_name("styles.css").read_text(encoding="utf-8")
+    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+    st.markdown("""
+<header class="site-header">
+  <div class="brand-mark">A<span>✦</span></div>
+  <div class="brand-name">ASA <span>/ EVENT MATCH</span></div>
+  <div class="header-note">ПОДРЯДЧИКИ ДЛЯ ВАШЕГО СОБЫТИЯ</div>
+</header>
+<section class="asa-hero">
+  <div><div class="hero-eyebrow"><span></span> ПОДБОР С ОПОРОЙ НА ФАКТЫ</div>
+    <h1>Найдите своих. <em>Увидьте разницу.</em></h1>
+  </div>
+  <p>Дата, формат и бюджет проверены. Сравните до трёх подходящих подрядчиков.</p>
+</section>
+""", unsafe_allow_html=True)
 
-    request, fail_llm, debug = sidebar_request()
-    if request is None:
-        st.info("Выберите готовый демо-сценарий или заполните параметры слева и нажмите «Подобрать».")
-        return
+    search_col, results_col = st.columns([.85, 2.15], gap="large")
+    with search_col:
+        request, fail_llm, debug = search_request()
 
-    try:
-        with st.spinner("Подбираем…"):
-            response = run(request, simulated_llm_failure if fail_llm else None)
-    except ValueError as exc:
-        st.error(f"Проверьте параметры: {exc}")
-        return
+    with results_col:
+        if request is None:
+            st.markdown(
+                '<div class="empty-start"><span>✦</span><div><strong>Сначала задайте параметры</strong>'
+                '<p>TOP‑3 появится здесь после нажатия «Найти».</p></div></div>',
+                unsafe_allow_html=True,
+            )
+            return
 
-    title, kind = OUTCOME[response["status"]]
-    getattr(st, kind)(f"**{title}.** {response['headline']}")
+        try:
+            with st.spinner("Подбираем варианты…"):
+                response = run(request, simulated_llm_failure if fail_llm else None)
+        except ValueError as exc:
+            st.error(f"Проверьте параметры: {exc}")
+            return
 
-    results, hints = response["results"], response["hints"]
-    if hints:
-        advice = "\n".join(f"- {keep_numbers_together(hint)}" for hint in hints)
-        if len(results) == 3:
-            # Full answer: the advice is secondary, keep it folded.
-            with st.expander("Почему не подошли остальные и как расширить выбор"):
+        results, hints = response["results"], response["hints"]
+        status_class = {"matched": "matched", "no_match": "empty", "category_not_found": "missing"}[
+            response["status"]
+        ]
+        st.markdown(
+            f'<section class="result-summary {status_class}"><div class="result-count">{len(results):02d}'
+            f'<span> / 03</span></div><div><div class="result-eyebrow">02 / РЕЗУЛЬТАТ</div>'
+            f'<h2>{escape(OUTCOME[response["status"]])}</h2>'
+            f'<p>{escape(response["headline"])}</p></div></section>',
+            unsafe_allow_html=True,
+        )
+
+        if hints:
+            advice = "\n".join(f"- {keep_numbers_together(hint)}" for hint in hints)
+            if len(results) == 3:
+                with st.expander("Почему не подошли остальные и как расширить выбор"):
+                    st.markdown(advice)
+            else:
+                st.markdown('<div class="advice-title">Что можно изменить в запросе</div>', unsafe_allow_html=True)
                 st.markdown(advice)
-        else:
-            st.markdown("**Почему вариантов мало и что можно изменить**" if results
-                        else "**Почему никто не подошёл и что можно изменить**")
-            st.markdown(advice)
 
-    if results:
-        for column, card in zip(st.columns(3), results):
-            with column:
-                render_card(card, debug)
+        if results:
+            st.markdown(
+                '<div class="section-heading"><div><span class="section-index">03 / СРАВНЕНИЕ</span>'
+                '<h2>Короткий список</h2></div><p>Плюсы и ограничения по данным профилей.</p></div>',
+                unsafe_allow_html=True,
+            )
+            for rank, card in enumerate(results, start=1):
+                render_card(card, debug, rank)
 
-    if debug:
-        st.divider()
-        left, right = st.columns(2)
-        with left:
-            st.markdown("**Запрос**")
-            st.json(request)
-        with right:
-            st.markdown("**Сколько отсеяно по каждой причине**")
-            st.markdown("\n".join(f"- {COUNT_TITLES.get(k, k)}: **{v}**" for k, v in response["counts"].items()))
-            st.caption("Один подрядчик может не пройти сразу по нескольким причинам, "
-                       "поэтому сумма может быть больше общего числа.")
-        st.caption(f"Время ответа: {response['elapsed_ms']} мс")
+        if debug:
+            with st.expander("Технические подробности"):
+                st.markdown("**Запрос**")
+                st.json(request)
+                st.markdown("**Отсеяно по причинам**")
+                st.markdown("\n".join(
+                    f"- {COUNT_TITLES.get(k, k)}: **{v}**"
+                    for k, v in response["counts"].items()
+                ))
+                st.caption(f"Время ответа: {response['elapsed_ms']} мс")
 
 
 main()

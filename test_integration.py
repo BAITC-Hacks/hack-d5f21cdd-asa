@@ -2,6 +2,7 @@
 
 import re
 import unittest
+from unittest.mock import patch
 
 from demo_scenarios import SCENARIOS
 from matching import load_providers
@@ -85,6 +86,23 @@ class DefinitionOfDoneTests(unittest.TestCase):
         for card in response["results"]:
             self.assertEqual(card["reason_source"], "fallback")
             self.assertTrue(card["reason"])
+
+    def test_one_comparison_call_for_whole_answer(self):
+        request = SCENARIOS["3. Фотограф на корпоратив, 15 октября"]["request"]
+        calls = []
+
+        def select(payload):
+            calls.append(payload)
+            return [{"id": card["id"], "pros": [card["pros"][0]["id"]], "cons": []}
+                    for card in payload["cards"]]
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "fake-test-key"}), \
+             patch("comparison.openai_compare", side_effect=select), \
+             patch("explanations.urlopen", side_effect=AssertionError("extra API call")):
+            response = run(request)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls[0]["cards"]), len(response["results"]))
+        self.assertTrue(all(card["comparison_source"] == "llm" for card in response["results"]))
 
     def test_synthetic_profiles_are_labelled(self):
         for scenario in SCENARIOS.values():

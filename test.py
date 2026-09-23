@@ -1,7 +1,11 @@
 """Behavior checks for matching and grounded explanations."""
 
+import json
 import unittest
+from io import BytesIO
+from unittest.mock import patch
 
+from comparison import add_comparative_facts, openai_compare
 from explanations import explain_response, generate_reason
 from matching import load_providers, recommend
 
@@ -108,6 +112,58 @@ class ExplanationTests(unittest.TestCase):
         out = explain_response(raw)
         self.assertEqual([x["id"] for x in out["results"]], ["A", "B"])
         self.assertTrue(all(x["reason"] for x in out["results"]))
+
+
+class ComparisonTests(unittest.TestCase):
+    def setUp(self):
+        self.raw = recommend(BASE, [
+            provider("A", price=100000, price_imputed=True, languages="русский|английский"),
+            provider("B", price=200000, max_hours="8"),
+            provider("C", price=300000, synthetic=True),
+        ])
+
+    def test_model_sees_all_cards_and_only_verified_points_are_shown(self):
+        seen = []
+
+        def choose(payload):
+            seen.append(payload)
+            return [{"id": card["id"], "pros": [card["pros"][0]["id"]], "cons": []}
+                    for card in payload["cards"]]
+
+        result = add_comparative_facts(self.raw, BASE, choose)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(len(seen[0]["cards"]), 3)
+        self.assertEqual(seen[0]["request"]["budget_kzt"], BASE["budget_kzt"])
+        self.assertEqual([card["id"] for card in result["results"]],
+                         [card["id"] for card in self.raw["results"]])
+        self.assertTrue(all(card["comparison_source"] == "llm" for card in result["results"]))
+        self.assertIn("оценочная", " ".join(point["text"] for point in result["results"][0]["comparison"]["cons"]))
+        self.assertIn("демонстрации", " ".join(point["text"] for point in result["results"][2]["comparison"]["cons"]))
+
+    def test_invalid_model_ids_use_grounded_fallback(self):
+        result = add_comparative_facts(self.raw, BASE, lambda _: [
+            {"id": "A", "pros": ["fabricated"], "cons": []},
+            {"id": "B", "pros": ["fabricated"], "cons": []},
+            {"id": "C", "pros": ["fabricated"], "cons": []},
+        ])
+        self.assertTrue(all(card["comparison_source"] == "fallback" for card in result["results"]))
+        self.assertNotIn("fabricated", str(result))
+
+    def test_responses_api_payload_is_one_structured_request(self):
+        choice = [{"id": "A", "pros": ["price_lowest"], "cons": []}]
+        captured = []
+
+        def fake_urlopen(request, timeout):
+            captured.append(json.loads(request.data))
+            response = {"status": "completed", "output": [{"type": "message", "content": [
+                {"type": "output_text", "text": json.dumps({"cards": choice})}]}]}
+            return BytesIO(json.dumps(response).encode())
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "fake-test-key"}), patch("comparison.urlopen", fake_urlopen):
+            self.assertEqual(openai_compare({"cards": [{"id": "A"}]}), choice)
+        self.assertEqual(len(captured), 1)
+        self.assertFalse(captured[0]["store"])
+        self.assertEqual(captured[0]["text"]["format"]["type"], "json_schema")
 
 
 if __name__ == "__main__":

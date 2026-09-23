@@ -62,7 +62,7 @@ def _render(ids: list[str], facts: dict[str, str], candidate: dict[str, Any]) ->
     if extras:
         core += "; " + "; ".join(_lower(x) for x in extras)
     core = core.rstrip(".!?")
-    profile = facts["profile"].rstrip(".!?") if "profile" in ids else ""
+    profile = facts["profile"].rstrip(".!?") if "profile" in ids and facts["profile"] not in facts.get("compare", "") else ""
 
     if "compare" in ids:
         # What sets this card apart goes first; shared checks go second. Still 2 sentences.
@@ -125,12 +125,14 @@ def openai_select_evidence(candidate: dict[str, Any]) -> list[str]:
     return parsed["evidence_ids"]
 
 
-def generate_reason(candidate: dict[str, Any], selector: Selector | None = None) -> dict[str, Any]:
+def generate_reason(
+    candidate: dict[str, Any], selector: Selector | None = None, *, use_llm: bool = True,
+) -> dict[str, Any]:
     """Return reason, source and IDs. Any API/validation failure uses fallback."""
     facts = _facts(candidate)
     ids = _fallback_ids(facts)
     source = "fallback"
-    if set(CORE_IDS).issubset(facts) and (selector is not None or os.getenv("OPENAI_API_KEY")):
+    if use_llm and set(CORE_IDS).issubset(facts) and (selector is not None or os.getenv("OPENAI_API_KEY")):
         try:
             selected = (selector or openai_select_evidence)(candidate)
             if _valid_ids(selected, facts, candidate):
@@ -148,9 +150,11 @@ def generateReason(candidateFacts: dict[str, Any]) -> dict[str, Any]:
     return generate_reason(candidateFacts)
 
 
-def explain_response(response: dict[str, Any], selector: Selector | None = None) -> dict[str, Any]:
+def explain_response(
+    response: dict[str, Any], selector: Selector | None = None, *, use_llm: bool = True,
+) -> dict[str, Any]:
     """Add explanations without changing selection, order, scores or statuses."""
     return {**response, "results": [
-        {**candidate, **generate_reason(candidate, selector)}
+        {**candidate, **generate_reason(candidate, selector, use_llm=use_llm)}
         for candidate in response.get("results", [])
     ]}
