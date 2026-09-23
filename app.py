@@ -35,12 +35,6 @@ COUNT_TITLES = {
     "duration": "Не работают столько часов",
     "price_missing": "Без указанной цены",
 }
-FACT_TITLES = {
-    "compare": "Отличие от других карточек", "profile": "Из описания профиля",
-    "format": "Формат", "available": "Календарь", "budget": "Бюджет",
-    "category": "Категория", "language": "Язык", "duration": "Длительность",
-    "synthetic": "Синтетика", "city_imputed": "Город",
-}
 
 
 @st.cache_data
@@ -200,7 +194,7 @@ def render_card(card: dict, debug: bool, rank: int) -> None:
             used = set(card["evidence_ids"])
             for fact in card["facts"]:
                 mark = "✓" if fact["id"] in used else "▫"
-                st.markdown(f"{mark} **{FACT_TITLES.get(fact['id'], fact['id'])}:** {fact['text']}")
+                st.markdown(f"{mark} {fact['text']}")
 
 
 def main() -> None:
